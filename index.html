@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ムシキャッチ・スキャナー</title>
+    <style>
+        :root { --pokedex-red: #cc0000; --screen-blue: #a8dadc; }
+        body { font-family: sans-serif; background: #333; color: white; text-align: center; margin: 0; padding-bottom: 50px; }
+        #camera-panel { background: var(--pokedex-red); padding: 20px; border-bottom: 10px solid #8b0000; }
+        #preview-container { position: relative; width: 320px; height: 320px; margin: 10px auto; background: black; overflow: hidden; border: 8px solid #ddd; border-radius: 10px; }
+        video, #preview-img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
+        #crop-box { position: absolute; border: 3px solid #00ff00; box-shadow: 0 0 0 4000px rgba(0,0,0,0.6); cursor: move; touch-action: none; top: 60px; left: 60px; width: 200px; height: 200px; z-index: 10; }
+        #resize-handle { position: absolute; bottom: 0; right: 0; width: 30px; height: 30px; background: #00ff00; cursor: nwse-resize; }
+        .btn-group { margin: 15px; }
+        button, .file-label { padding: 12px 20px; margin: 5px; font-weight: bold; cursor: pointer; border: none; border-radius: 25px; display: inline-block; font-size: 16px; }
+        .capture-btn { background: #ffcc00; color: #333; box-shadow: 0 4px #b89400; }
+        .file-label { background: #eee; color: #333; }
+        .zukan-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; padding: 20px; }
+        .bug-card { background: var(--screen-blue); color: #333; width: 300px; border-radius: 15px; overflow: hidden; border: 4px solid #fff; }
+        .bug-card img { width: 100%; height: 180px; object-fit: cover; background: #fff; }
+        .bug-info { padding: 15px; text-align: left; }
+        .bug-name { font-size: 1.3em; font-weight: bold; color: #cc0000; border-bottom: 2px solid #555; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+
+<div id="camera-panel">
+    <h1>MUSI-DEX SCANNER</h1>
+    <div id="preview-container">
+        <video id="video" autoplay playsinline></video>
+        <img id="preview-img" style="display:none;">
+        <div id="crop-box"><div id="resize-handle"></div></div>
+    </div>
+    <div class="btn-group">
+        <label class="file-label">写真を選択<input type="file" id="file-input" accept="image/*" style="display:none;"></label>
+        <button class="capture-btn" id="snap">虫をスキャン！</button>
+    </div>
+    <p id="status">枠内に虫を捉えてボタンを押してね</p>
+</div>
+
+<canvas id="crop-canvas" style="display:none;"></canvas>
+<h2>登録済み図鑑</h2>
+<div id="zukan" class="zukan-container"></div>
+
+<script>
+const video = document.getElementById('video');
+const previewImg = document.getElementById('preview-img');
+const fileInput = document.getElementById('file-input');
+const cropBox = document.getElementById('crop-box');
+const container = document.getElementById('preview-container');
+const status = document.getElementById('status');
+
+navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(stream => { video.srcObject = stream; });
+
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = (f) => { previewImg.src = f.target.result; previewImg.style.display = 'block'; video.style.display = 'none'; };
+        reader.readAsDataURL(file);
+    }
+});
+
+// 枠の操作ロジック
+let isDragging = false, isResizing = false, startX, startY, startW, startH, startTop, startLeft;
+const startAction = (e) => {
+    const t = e.touches ? e.touches[0] : e;
+    if (e.target.id === 'resize-handle') isResizing = true; else isDragging = true;
+    startX = t.clientX; startY = t.clientY;
+    startW = cropBox.offsetWidth; startH = cropBox.offsetHeight;
+    startTop = cropBox.offsetTop; startLeft = cropBox.offsetLeft;
+};
+cropBox.addEventListener('mousedown', startAction);
+cropBox.addEventListener('touchstart', startAction, {passive: false});
+
+const doAction = (e) => {
+    if (!isDragging && !isResizing) return;
+    const t = e.touches ? e.touches[0] : e;
+    if (isResizing) {
+        cropBox.style.width = Math.max(50, startW + (t.clientX - startX)) + 'px';
+        cropBox.style.height = Math.max(50, startH + (t.clientY - startY)) + 'px';
+    } else {
+        cropBox.style.left = (startLeft + (t.clientX - startX)) + 'px';
+        cropBox.style.top = (startTop + (t.clientY - startY)) + 'px';
+    }
+};
+window.addEventListener('mousemove', doAction);
+window.addEventListener('touchmove', doAction, {passive: false});
+window.addEventListener('mouseup', () => isDragging = isResizing = false);
+window.addEventListener('touchend', () => isDragging = isResizing = false);
+
+// スキャン実行
+document.getElementById('snap').addEventListener('click', async () => {
+    status.innerText = "解析中...（少し時間がかかる場合があります）";
+    const canvas = document.getElementById('crop-canvas');
+    const ctx = canvas.getContext('2d');
+    const source = video.style.display === 'none' ? previewImg : video;
+    
+    const sWidth = source.videoWidth || source.naturalWidth;
+    const sHeight = source.videoHeight || source.naturalHeight;
+    const scaleX = sWidth / container.offsetWidth;
+    const scaleY = sHeight / container.offsetHeight;
+    
+    canvas.width = cropBox.offsetWidth * scaleX;
+    canvas.height = cropBox.offsetHeight * scaleY;
+    ctx.drawImage(source, cropBox.offsetLeft * scaleX, cropBox.offsetTop * scaleY, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8));
+    const formData = new FormData();
+    formData.append('image', blob);
+
+    try {
+        // エラー回避用プロキシを通す（ブラウザのCORS制限をバイパス）
+        const proxyUrl = "https://api.allorigins.win/raw?url=";
+        const targetUrl = encodeURIComponent("https://api.inaturalist.org/v1/computervision/score");
+        
+        const response = await fetch(proxyUrl + targetUrl, {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+            const taxon = data.results[0].taxon;
+            const name = taxon.preferred_common_name || taxon.name;
+            fetchWiki(name, canvas.toDataURL());
+        } else {
+            status.innerText = "虫を特定できませんでした";
+        }
+    } catch (err) {
+        status.innerText = "エラー: ネット接続またはAPI制限";
+        console.error(err);
+    }
+});
+
+async function fetchWiki(name, img) {
+    const url = `https://ja.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`;
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        const card = document.createElement('div');
+        card.className = 'bug-card';
+        card.innerHTML = `<img src="${img}"><div class="bug-info"><div class="bug-name">${name}</div><div>${data.extract || '説明なし'}</div></div>`;
+        document.getElementById('zukan').prepend(card);
+        status.innerText = "図鑑に登録しました！";
+    } catch (e) { status.innerText = "Wiki情報の取得に失敗"; }
+}
+</script>
+</body>
+</html>
